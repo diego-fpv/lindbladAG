@@ -1,19 +1,14 @@
 import numpy as np
-import os
-import time
-import types
-import warnings
 import scipy.integrate
 from qutip.qobj import Qobj, isket
 from qutip.states import basis
-from qutip.superoperator import vec2mat, mat2vec, lindblad_dissipator, liouvillian
+from qutip.superoperator import vec2mat, mat2vec, lindblad_dissipator, liouvillian, spre, spost
 from qutip.expect import expect
 from qutip.solver import Options, Result, config, _solver_safety_check
 from qutip.cy.spmatfuncs import cy_ode_rhs
 from qutip.cy.spconvert import dense2D_to_fastcsr_fmode
 from qutip.ui.progressbar import BaseProgressBar, TextProgressBar
 from qutip.cy.openmp.utilities import check_use_openmp
-import qutip.settings as qset
 
 def evaluate(f: np.ndarray, x: float) -> np.ndarray:
     """ 
@@ -228,10 +223,12 @@ def lindbladianAG(H, a_ops, J, L=None, c_ops=[], use_secular=False, sec_cutoff=0
     a_arr = np.array([a_ops[k].transform(ekets).full() for k in range(K)])
     #   total matrix element for each transition (to filter the transitions that need to be summed over)
     a_tot = np.linalg.norm(a_arr, axis=0)
+    print(a_tot)
     #   the transition |ni><mi| has an associated transition operator <ni|A|mi> = Ai and energy wi = Emi - Eni
     matElements = np.asarray([a_arr[:, n, m] for n in range(N) for m in range(N) if a_tot[n, m] != 0.0])
     transitions = [(n, m) for n in range(N) for m in range(N) if a_tot[n, m] != 0.0]
-    W = np.array([(H[m, m] - H[n, n]).real for n, m in transitions])
+    print(transitions)
+    W = np.array([(Heb[m, m] - Heb[n, n]).real for n, m in transitions])
     T = len(W)
 
     # cutoff for secular approximation, if needed
@@ -247,7 +244,7 @@ def lindbladianAG(H, a_ops, J, L=None, c_ops=[], use_secular=False, sec_cutoff=0
 
     # Kossakowski matrix only: 
     # (dispatched like this to avoid looping over transitions 2 times)
-    if L == None or L == []:
+    if not isinstance(L, np.ndarray):
         Kmatrix = np.zeros((T, T), dtype=complex)
         for i, Ai in enumerate(matElements):
             # only check use_secular once per transition i
@@ -283,6 +280,7 @@ def lindbladianAG(H, a_ops, J, L=None, c_ops=[], use_secular=False, sec_cutoff=0
                 matElementsSec = matElements
 
             for j, Aj in zip(transitionSubsetSec, matElementsSec):
+                print(i, Ai, j, Aj)
                 # geometric mean for the Kossakowski matrix
                 Gammai = np.einsum("a,b,ab->", Ai.conj(), Aj, Gammaw[:, :, i])
                 Gammaj = np.einsum("a,b,ab->", Ai.conj(), Aj, Gammaw[:, :, j])
@@ -291,6 +289,10 @@ def lindbladianAG(H, a_ops, J, L=None, c_ops=[], use_secular=False, sec_cutoff=0
                 Lambdai = np.einsum("a,b,ab->", Ai.conj(), Aj, Lambdaw[:, :, i])
                 Lambdaj = np.einsum("a,b,ab->", Ai.conj(), Aj, Lambdaw[:, :, j])
                 Lmatrix[i, j] = 0.5 * (Lambdai + Lambdaj)
+                Lmatrix[i, j] = np.sqrt(Lambdai) * np.sqrt(Lambdaj)
+
+        print(Lmatrix)
+
 
     # diagonalize Kossakowski matrix and keep only positive rates
     rates, vecs = np.linalg.eigh(Kmatrix)
@@ -305,13 +307,26 @@ def lindbladianAG(H, a_ops, J, L=None, c_ops=[], use_secular=False, sec_cutoff=0
         Liouvillian += rate * lindblad_dissipator(sigmaj)
 
     # calculate Lamb shift Hamiltonian and commutator superoperator
-    if L != None and L != []:
-        pass
+    Hls = np.zeros((N, N), dtype=complex)
+    if isinstance(L, np.ndarray):
+        for i, (ni, mi) in enumerate(transitions):
+            for j, (nj, mj) in enumerate(transitions[i:], start=i):
+                # transitions i and j connect states mi and mj: |mi><ni|nj><mj|
+                if ni == nj:
+                    Hls[mi, mj] += Lmatrix[i, j]
+                    Hls[mj, mi] += Lmatrix[j, i]
+        Hls = Qobj(Hls)
+        print(Hls)
+        Liouvillian += - 1j * (spre(Hls) - spost(Hls))
+
+                
+
 
 
     return Liouvillian, ekets
 
 def mesolveAG_solve(T, ekets, rho0, tlist, e_ops=[], options=None, progress_bar=None):
+
     """
     Evolve the ODEs defined by Bloch-Redfield master equation. The
     Bloch-Redfield tensor can be calculated by the function
@@ -425,3 +440,7 @@ def mesolveAG_solve(T, ekets, rho0, tlist, e_ops=[], options=None, progress_bar=
             r.integrate(r.t + dt[t_idx])
     progress_bar.finished()
     return result_list
+
+def old_bloch_redfield_tensor():
+    pass
+
