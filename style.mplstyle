@@ -1,0 +1,33 @@
+figure.figsize: 4.5, 3.0
+figure.constrained_layout.use: True
+
+font.size: 16.
+font.family: Latin Modern Math
+mathtext.fontset: cm
+
+legend.frameon: False
+legend.numpoints: 1
+legend.scatterpoints: 1
+legend.loc: best
+legend.fontsize: medium
+
+axes.prop_cycle: cycler('color', ['000000', 'E69F00', '56B4E9', '009E73', 'F0E442', '0072B2', 'D55E00', 'CC79A7'])
+
+patch.linewidth: 0.3
+lines.linewidth: 2.
+lines.markersize: 7
+
+axes.axisbelow: True
+axes.linewidth: 1.25
+
+xtick.direction: in
+ytick.direction: in
+
+xtick.major.size: 6
+ytick.major.size: 6
+
+xtick.major.width: 1
+ytick.major.width: 1
+
+xtick.major.pad: 7
+ytick.major.pad: 7
