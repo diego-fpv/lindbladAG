@@ -218,12 +218,15 @@ def lindbladianAG(H, a_ops, J, L=None, c_ops=[], use_secular=False, sec_cutoff=0
     evals, ekets = H.eigenstates()
     # diagonalized Hamiltonian:
     Heb = H.transform(ekets)
+
+    # Liouvillian tensor. System's Hamiltonian + dissipation from c_ops (if given)
+    Liouvillian = liouvillian(Heb, c_ops=[c_op.transform(ekets) for c_op in c_ops])
+
     N = len(evals)
     K = len(a_ops)
 
     # transitions:    
     #   transition operators as arrays
-    A = np.array([a_ops[k].transform(ekets).full() for k in range(K)])
     a_arr = np.array([a_ops[k].transform(ekets).full() for k in range(K)])
     #   total matrix element for each transition (to filter the transitions that need to be summed over)
     a_tot = np.linalg.norm(a_arr, axis=0)
@@ -294,7 +297,6 @@ def lindbladianAG(H, a_ops, J, L=None, c_ops=[], use_secular=False, sec_cutoff=0
     rates, vecs = rates[idxPositive], vecs[:, idxPositive]
     
     # fill Lindblad superoperator:
-    Liouvillian = 0
     for rate, vec in zip(rates, vecs.T):
         sigmaj = 0
         for (nj, mj), vj in zip(transitions, vec):
@@ -311,14 +313,9 @@ def lindbladianAG(H, a_ops, J, L=None, c_ops=[], use_secular=False, sec_cutoff=0
                     Hls[mi, mj] += Lmatrix[i, j]
         Hls = Qobj(Hls)
         Liouvillian += -1j * (spre(Hls) - spost(Hls))
-    # Liouvillian tensor. System's Hamiltonian + dissipation from c_ops (if given)
-    Liouvillian += liouvillian(Heb, c_ops=[c_op.transform(ekets) for c_op in c_ops])
+    
+    
 
-    # print("\nLiouvillian print")
-    # for i in range(N**2):
-    #     for j in range(N**2):
-    #         if Liouvillian[i, j] != 0: 
-    #             print(i, j, Liouvillian[i, j])
 
 
     return Liouvillian, ekets
