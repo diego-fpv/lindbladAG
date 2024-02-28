@@ -1,9 +1,7 @@
 import numpy as np
-import time, warnings
 import scipy.integrate
 from qutip.qobj import Qobj, isket
 from qutip.states import basis
-from qutip import qeye
 from qutip.superoperator import vec2mat, vec2mat_index, mat2vec, lindblad_dissipator, liouvillian, spre, spost
 from qutip.expect import expect
 from qutip.solver import Options, Result, config, _solver_safety_check
@@ -13,14 +11,30 @@ from qutip.ui.progressbar import BaseProgressBar, TextProgressBar
 from qutip.cy.openmp.utilities import check_use_openmp
 import qutip.settings as qset
 
-def evaluate(f: np.ndarray, x: float) -> np.ndarray:
+
+# -------------------------------------------------------------------------------
+# Evaluate an array of callable objects at a given point.
+# 
+def evaluate(f: np.ndarray, x: (float | int)) -> np.ndarray:
     """ 
     Evaluate a symmetric array of functions at a given value.
-    Input:
-        - f: array of functions to be evaluated. A 1d array is interpreted as a diagonal matrix.
-        - x: value at which to evaluate (only one value, not an array of values)
-    Returns:
-        - square symmetric array of floats.
+
+    Parameters
+    ----------
+
+    f : np.ndarray
+        Array of functions to be evaluated. 
+        A 1d array is interpreted as a diagonal matrix.
+    
+    x : float / int
+        value at which to evaluate (only one value, 
+        not an array of values)
+    
+    Returns
+    -------
+        -
+    fOut : np.ndarray 
+        Square symmetric array of floats.
     """
 
     # only diagonal
@@ -45,52 +59,33 @@ def evaluate(f: np.ndarray, x: float) -> np.ndarray:
         
         return fOut
 
+
+# -------------------------------------------------------------------------------
+# Solve the arithmetic-geometric master equation, with a similar signature to
+# brmesolve (prior to QuTiP 4.3). Only time-independent problems are currently
+# supported. 
+# 
 def mesolveAG(H, psi0, tlist, a_ops=[], J=None, L=None, e_ops=[], c_ops=[],
-              args={}, use_secular=False, sec_cutoff = 0.1, options=None,
+              use_secular=False, sec_cutoff = 0.1, options=None, tol=qset.atol,
               progress_bar=None, _safe_mode=True, verbose=False):
     """
-    Solves for the dynamics of a system using the Bloch-Redfield master equation,
+    Solves for the dynamics of a system using the arithmetic-geometric master equation,
     given an input Hamiltonian, Hermitian bath-coupling terms and their associated
-    spectrum functions, as well as possible Lindblad collapse operators.
+    spectral functions, as well as other possible Lindblad collapse operators.
 
-    For time-independent systems, the Hamiltonian must be given as a Qobj,
-    whereas the bath-coupling terms (a_ops), must be written as a nested list
-    of operator - spectrum function pairs, where the frequency is specified by
-    the `w` variable.
-
-    *Example*
-
-        a_ops = [[a+a.dag(),lambda w: 0.2*(w>=0)]]
-
-    For time-dependent systems, the Hamiltonian, a_ops, and Lindblad collapse
-    operators (c_ops), can be specified in the QuTiP string-based time-dependent
-    format.  For the a_op spectra, the frequency variable must be `w`, and the
-    string cannot contain any other variables other than the possibility of having
-    a time-dependence through the time variable `t`:
+    The Hamiltonian must be given as a Qobj, the bath-coupling terms (a_ops)
+    must be written as a list of operators, and the spectral functions have to be passed
+    as 1D or 2D square arrays of callable objects.
 
     *Example*
 
-        a_ops = [[a+a.dag(), '0.2*exp(-t)*(w>=0)']]
+        a_ops = [a1+a1.dag(), a2+a2.dag()]
+        J = np.array([lambda x, ci=i: i*(x>0) for i in [1, 2]])
+        L = np.array([lambda x, ci=i: 3*i*(x>0) for i in [1, 2]])
 
-    It is also possible to use Cubic_Spline objects for time-dependence.  In
-    the case of a_ops, Cubic_Splines must be passed as a tuple:
-
-    *Example*
-
-        a_ops = [ [a+a.dag(), ( f(w), g(t)] ]
-
-    where f(w) and g(t) are strings or Cubic_spline objects for the bath
-    spectrum and time-dependence, respectively.
-
-    Finally, if one has bath-couplimg terms of the form
-    H = f(t)*a + conj[f(t)]*a.dag(), then the correct input format is
-
-    *Example*
-
-              a_ops = [ [(a,a.dag()), (f(w), g1(t), g2(t))],... ]
-
-    where f(w) is the spectrum of the operators while g1(t) and g2(t)
-    are the time-dependence of the operators `a` and `a.dag()`, respectively
+    The implementation leaves J and L as independent parameters, but in reality these are Hilbert conjugates of each other. This should be taken into account while creating the arrays before calling this function.
+        
+    Only time-independent Hamiltonians are currently supported.
 
     Parameters
     ----------
@@ -102,12 +97,19 @@ def mesolveAG(H, psi0, tlist, a_ops=[], J=None, L=None, e_ops=[], c_ops=[],
         Initial density matrix or state vector (ket).
 
     tlist : array_like
-        List of times for evaluating evolution
+        List of times for evaluating evolution.
 
     a_ops : list
-        Nested list of Hermitian system operators that couple to
-        the bath degrees of freedom, along with their associated
-        spectra.
+        List of Hermitian system operators that couple to
+        the bath degrees of freedom.
+
+    J : np.ndarray
+        Array of functions that describe the coupling between
+        the system and the environment (dissipative part).
+
+    J : np.ndarray
+        Array of functions that describe the coupling between
+        the system and the environment (energy shift part).
 
     e_ops : list
         List of operators for which to evaluate expectation values.
@@ -115,9 +117,6 @@ def mesolveAG(H, psi0, tlist, a_ops=[], J=None, L=None, e_ops=[], c_ops=[],
     c_ops : list
         List of system collapse operators, or nested list in
         string-based format.
-
-    args : dict
-        Placeholder for future implementation, kept for API consistency.
 
     use_secular : bool {True}
         Use secular approximation when evaluating bath-coupling terms.
@@ -128,9 +127,6 @@ def mesolveAG(H, psi0, tlist, a_ops=[], J=None, L=None, e_ops=[], c_ops=[],
     tol : float {qutip.setttings.atol}
         Tolerance used for removing small values after
         basis transformation.
-
-    spectra_cb : list
-        DEPRECIATED. Do not use.
 
     options : :class:`qutip.solver.Options`
         Options for the solver.
@@ -164,7 +160,7 @@ def mesolveAG(H, psi0, tlist, a_ops=[], J=None, L=None, e_ops=[], c_ops=[],
         e_ops = [e for e in e_ops.values()]
 
     if _safe_mode:
-        _solver_safety_check(H, psi0, a_ops+c_ops, e_ops, args)
+        _solver_safety_check(H, psi0, a_ops+c_ops, e_ops,)
 
     if progress_bar is None:
         progress_bar = BaseProgressBar()
@@ -196,14 +192,55 @@ def mesolveAG(H, psi0, tlist, a_ops=[], J=None, L=None, e_ops=[], c_ops=[],
         output.states = results
 
     return output
-    
+
+
+# -------------------------------------------------------------------------------
+# Function for calculating the Lindbladian of the arithmetic-geometric master 
+# equation.
+# 
 def lindbladianAG(H, a_ops, J, L=None, c_ops=[], use_secular=False, sec_cutoff=0.1):
     """
-    Description
-    Inputs:
-    Returns:
-    Comments:
-        With the formulation of {ref}, the relevant space of indices is that of transitions (i and j in {ref}). However, not all potentially possible transitions (N^2 of them) really have non-zero matrix elements in general, and it is a good strategy to filter them such that only transitions with non-vanishing matrix element are kept.
+    Compute the Lindbladian for a system given its Hamiltonian, a list of system operators coupling it to the baths and the corresponding spectral functions.
+
+    .. note::
+
+        This tensor generation requires a time-independent Hamiltonian.
+
+    Parameters
+    ----------
+
+    H : :class:`qutip.qobj`
+        System Hamiltonian.
+
+    a_ops : list of :class:`qutip.qobj`
+        List of system operators that couple to the environment.
+
+    J : array of callback functions
+        Array of callback functions that evaluate the spectral density
+        at a given frequency.
+    
+    L : array of callback functions
+        Array of callback functions that evaluate the integral of the
+        spectral density at a given frequency.
+
+    c_ops : list of :class:`qutip.qobj`
+        List of system collapse operators.
+
+    use_secular : bool
+        Flag (True of False) that indicates if the secular approximation should
+        be used.
+    
+    sec_cutoff : float
+        Parameter to control the secular approximation cutoff frequency.
+
+    Returns
+    -------
+
+    Liouvillian, ekets: :class:`qutip.Qobj`, list of :class:`qutip.Qobj`
+
+        Liouvillian is the Liouvillian tensor and ekets is a list eigenstates of the
+        Hamiltonian.
+
     """
 
     # sanity checks for input parameters
@@ -218,26 +255,30 @@ def lindbladianAG(H, a_ops, J, L=None, c_ops=[], use_secular=False, sec_cutoff=0
     evals, ekets = H.eigenstates()
     # diagonalized Hamiltonian:
     Heb = H.transform(ekets)
+    N = len(evals)
+    K = len(a_ops)
 
     # Liouvillian tensor. System's Hamiltonian + dissipation from c_ops (if given)
     Liouvillian = liouvillian(Heb, c_ops=[c_op.transform(ekets) for c_op in c_ops])
 
-    N = len(evals)
-    K = len(a_ops)
-
-    # transitions:    
+    # transitions: With the formulation of {ref}, the relevant space of indices is that 
+    # of transitions (i and j in {ref}). However, not all potentially possible transitions 
+    # (N^2 of them) really have non-zero matrix elements in general, and it is a good 
+    # strategy to filter them such that only transitions with non-vanishing matrix 
+    # element are kept.
     #   transition operators as arrays
     a_arr = np.array([a_ops[k].transform(ekets).full() for k in range(K)])
     #   total matrix element for each transition (to filter the transitions that need to be summed over)
     a_tot = np.linalg.norm(a_arr, axis=0)
-    #   the transition |ni><mi| has an associated transition operator <ni|A|mi> = Ai and energy wi = Emi - Eni
+    #   the transition |ni><mi| has an associated transition operator <ni|A|mi> = Ai 
+    #   and energy wi = Emi - Eni
     matElements = np.asarray([a_arr[:, n, m] for n in range(N) for m in range(N) if a_tot[n, m] != 0.0])
     transitions = [(n, m) for n in range(N) for m in range(N) if a_tot[n, m] != 0.0]
     W = np.array([(Heb[m, m] - Heb[n, n]).real for n, m in transitions])
     T = len(W)
 
-    # cutoff for secular approximation, if needed
-    dw_min = np.abs(W[W.nonzero()]).min()
+    # cutoff for secular approximation, in case it is needed
+    dw_min = np.abs(W[W.nonzero()]).min() * sec_cutoff
 
     # Gamma(w) evaluated at the transition frequencies (see {ref})
     Gammaw = np.zeros((K, K, T))
@@ -251,11 +292,12 @@ def lindbladianAG(H, a_ops, J, L=None, c_ops=[], use_secular=False, sec_cutoff=0
         for i, Ai in enumerate(matElements):
             # only check use_secular once per transition i
             if use_secular:
-                transitionSubsetSec = np.where(np.abs(W[i] - W) < dw_min * sec_cutoff)[0]
+                transitionSubsetSec = np.where(np.abs(W[i] - W) < dw_min)[0]
                 matElementsSec = matElements[transitionSubsetSec]
             else:
                 transitionSubsetSec = range(T)
                 matElementsSec = matElements
+            # loop over the secularized (or not) subset of j transitions
             for j, Aj in zip(transitionSubsetSec, matElementsSec):
                 Gammai = np.einsum("a,b,ab->", Ai.conj(), Aj, Gammaw[:, :, i])
                 Gammaj = np.einsum("a,b,ab->", Ai.conj(), Aj, Gammaw[:, :, j])
@@ -279,7 +321,7 @@ def lindbladianAG(H, a_ops, J, L=None, c_ops=[], use_secular=False, sec_cutoff=0
             else:
                 transitionSubsetSec = range(T)
                 matElementsSec = matElements
-
+            # loop over the secularized (or not) subset of j transitions
             for j, Aj in zip(transitionSubsetSec, matElementsSec):
                 # geometric mean for the Kossakowski matrix
                 Gammai = np.einsum("a,b,ab->", Ai.conj(), Aj, Gammaw[:, :, i])
@@ -289,7 +331,6 @@ def lindbladianAG(H, a_ops, J, L=None, c_ops=[], use_secular=False, sec_cutoff=0
                 Lambdai = np.einsum("a,b,ab->", Ai.conj(), Aj, Lambdaw[:, :, i]) 
                 Lambdaj = np.einsum("a,b,ab->", Ai.conj(), Aj, Lambdaw[:, :, j])
                 Lmatrix[i, j] = 0.5 * (Lambdai + Lambdaj)
-
 
     # diagonalize Kossakowski matrix and keep only positive rates
     rates, vecs = np.linalg.eigh(Kmatrix)
@@ -313,19 +354,20 @@ def lindbladianAG(H, a_ops, J, L=None, c_ops=[], use_secular=False, sec_cutoff=0
                     Hls[mi, mj] += Lmatrix[i, j]
         Hls = Qobj(Hls)
         Liouvillian += -1j * (spre(Hls) - spost(Hls))
-    
-    
-
-
 
     return Liouvillian, ekets
 
+
+# -------------------------------------------------------------------------------
+# Evolution of the arithmetic-geometric master equation given the lindbladian
+# tensor.
+# 
 def mesolveAG_solve(T, ekets, rho0, tlist, e_ops=[], options=None, progress_bar=None):
 
     """
-    Evolve the ODEs defined by Bloch-Redfield master equation. The
-    Bloch-Redfield tensor can be calculated by the function
-    :func:`bloch_redfield_tensor`.
+    Evolve the ODEs defined by the arithmetic-geometric master equation. The
+    Liouvillian tensor can be calculated by the function
+    :func:`liouvillianAG`.
 
     Parameters
     ----------
@@ -437,7 +479,10 @@ def mesolveAG_solve(T, ekets, rho0, tlist, e_ops=[], options=None, progress_bar=
     return result_list
 
 
-
+# -------------------------------------------------------------------------------
+# Solve the Bloch-Redfield equation including the Lamb shift with a minimal 
+# change from QuTiP's old version (< 4.3)
+# 
 def old_brmesolve(H, psi0, tlist, a_ops, e_ops=[], spectra_cb=[], c_ops=[],
               args={}, options=Options(), use_secular=False, sec_cutoff=0.1,
               _safe_mode=True):
@@ -503,6 +548,11 @@ def old_brmesolve(H, psi0, tlist, a_ops, e_ops=[], spectra_cb=[], c_ops=[],
 
     return output
 
+
+# -----------------------------------------------------------------------------
+# Evolution of the Bloch-Redfield master equation given the Bloch-Redfield
+# tensor.
+#
 def old_bloch_redfield_solve(R, ekets, rho0, tlist, e_ops=[], options=None):
     """
     Evolve the ODEs defined by Bloch-Redfield master equation. The
@@ -610,7 +660,12 @@ def old_bloch_redfield_solve(R, ekets, rho0, tlist, e_ops=[], options=None):
 
     return result_list
 
-def old_bloch_redfield_tensor(H, a_ops, spectra_cb=None, c_ops=[],
+
+# -----------------------------------------------------------------------------
+# Functions for calculating the Bloch-Redfield tensor for a time-independent
+# system.
+#
+def old_bloch_redfield_tensor(H, a_ops, spectra_cb=[], c_ops=[],
                     use_secular=False, sec_cutoff=0.1):
     """
     Calculate the Bloch-Redfield tensor for a system given a set of operators
@@ -667,7 +722,7 @@ def old_bloch_redfield_tensor(H, a_ops, spectra_cb=None, c_ops=[],
     N = len(evals)
     K = len(a_ops)
     
-    #only Lindblad collapse terms
+    # only Lindblad collapse terms
     if K==0:
         Heb = H.transform(ekets)
         L = liouvillian(Heb, c_ops=[c_op.transform(ekets) for c_op in c_ops])
@@ -713,12 +768,15 @@ def old_bloch_redfield_tensor(H, a_ops, spectra_cb=None, c_ops=[],
         for J, c, d in Jcds:
             elem = 0+0j
             # summed over k, i.e., each operator coupling the system to the environment
+            # notice the last .conj() to properly account for the Lamb shift
             elem += 0.5 * np.sum(A[:, a, c] * A[:, d, b] * (Sw[:, c, a] + Sw[:, d, b].conj()))
             if b==d:
                 #                  sum_{k,n} A[k, a, n] * A[k, n, c] * Jw[k, c, n])
                 elem -= 0.5 * np.sum(A[:, a, :] * A[:, :, c] * Sw[:, c, :])
             if a==c:
                 #                  sum_{k,n} A[k, d, n] * A[k, n, b] * Jw[k, d, n])
+                #                  notice the last .conj() to properly account for the 
+                #                  Lamb shift
                 elem -= 0.5 * np.sum(A[:, d, :] * A[:, :, b] * Sw[:, d, :].conj())
             if elem != 0 + 0j:
                 rows.append(I)
